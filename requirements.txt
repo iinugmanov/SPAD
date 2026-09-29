@@ -1,0 +1,9 @@
+# Python 3.11.7
+# Time differences use integer timestamps from datetime64[ns]
+# (pandas 2.x): astype("int64") // 10**9.
+numpy
+pandas
+matplotlib
+numba
+scikit-learn
+scipy
