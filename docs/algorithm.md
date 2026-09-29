@@ -7,9 +7,9 @@ seismic expression of tectonic asperities. The method does not use the
 locations of strong earthquakes as input.
 
 The paper organizes the method in three stages. The code in this
-repository implements declustering, the DPS density search, and a
-hierarchical cut of the dense events. Convex-hull patch contours from the
-paper are not computed. Event trees are a separate post-declustering
+repository implements declustering, a level set of a DPS-style density,
+and a centroid-linkage cut of the dense events. Convex-hull patch
+contours are not computed. Event trees are a separate post-declustering
 tool; they are not one of the three stages.
 
 ## 1. Background seismicity
@@ -79,37 +79,37 @@ only as examples.
 The distance routine reads its three columns as latitude, longitude and
 depth. Declustering passes `latitude`, `longitude`, `z_proj` in that order.
 
-## 2. Fuzzy clustering of the background
+## 2. Dense events
 
-The paper filters background epicenters with the Discrete Perfect Sets
-(DPS) algorithm. For a set `W` and exponent `q < 0` the localization
-radius is the generalized mean of the nonzero pairwise distances
-`D(W)`:
+Background events are reduced to a level set of a DPS-style density.
+The construction is the simple choice `X^1(alpha)` of Agayan,
+Bogoutdinov and Dobrovolsky (2014). The script does not iterate to the
+maximal alpha-perfect set.
+
+For a set `W` and a negative exponent `q`, the localization radius is
+the power mean of the positive pairwise distances `D(W)`:
 
 ```text
 r_q(W) = (sum(d ** q) / |D(W)|) ** (1 / q)
 ```
 
-Inside a ball of radius `r` the density at `w` is
+The density at `w` uses the kernel `1 - d/r`. The point itself is
+excluded, and the sum is not divided by `max(P)`:
 
 ```text
-P(w) = sum over neighbours xi of (1 - d(w, xi) / r)
+P(w) = sum over other xi with d(w, xi) <= r of (1 - d(w, xi) / r)
 ```
 
-The paper sets the density level `alpha` from a fuzzy comparison of `P`
-with level `beta` in `[-1, 1]`. The script uses
+The level is
 
 ```text
-alpha = max(P) - beta * max(P)
+alpha = (1 - beta) * max(P)
 ```
 
-and `alpha = 0` when `max(P)` is 0. Events with `P >= alpha` form the
-dense subset.
+Dense events are `{w : P(w) >= alpha}`. When `max(P)` is 0 the code
+returns `alpha = 0`, which is the same product.
 
-The paper asks for the configuration that maximizes the number of dense
-clusters and the number of events in them, and, if those counts tie, the
-configuration whose pairwise distances match the mode of the background
-distances. The script searches
+The script searches
 
 ```text
 q    = numpy.arange(-2.9, -0.1, 0.1)
@@ -119,33 +119,33 @@ beta = numpy.arange(-1.0, 1.0, 0.1)
 `arange` does not include the stop value, so `beta` runs from `-1.0`
 through `0.9` and `q` from `-2.9` up to, but not including, `-0.1`.
 A configuration is skipped when fewer than two events pass `alpha`.
-Among the rest, the script minimizes the mean bin-distance between peaks
-of the density histogram of all background events and peaks of the
-histogram of the dense subset. On a tie it keeps the larger number of
-clusters. Those clusters are a centroid-linkage cut of the dense subset
-at the radius `r` of that configuration. They are stored as
-`dense_group_id` (relabeled from 0; events outside the subset are `-1`).
-This is not a count of events inside the clusters, and it compares
-density histograms rather than pairwise distances.
+Among the rest, `q` and `beta` are chosen by an empirical SPAD
+heuristic that is not part of DPS. The heuristic minimizes the mean
+bin-distance between peaks of the density histogram of all background
+events and peaks of the histogram of the dense subset. On a tie it
+keeps the larger number of clusters. Those clusters are a
+centroid-linkage cut of the dense subset at the radius `r` of that
+configuration. They are stored as `dense_group_id` (relabeled from 0;
+events outside the subset are `-1`).
 
 Rows with `Aftershock == True` are removed before this stage. If the
 column is absent, every row is kept. `magnitude` and `time` must be
 present; the distance calculation does not use them.
 
+Agayan, S. M.; Bogoutdinov, Sh. R.; Dobrovolsky, M. N. Discrete Perfect
+Sets and Their Application in Cluster Analysis. *Cybernetics and Systems
+Analysis* 2014, 50(2), 176–190.
+
 ## 3. Seismogenic patches
 
-The paper groups dense sets with a minimal spanning tree in the Euclidean
-metric and cuts the tree at the peak of the pairwise-distance
-distribution. It defines each patch contour as the convex polygon of the
-epicenters in that cluster.
-
-The script cuts a different tree. It builds a centroid-linkage hierarchy
-of the dense events (`method="centroid"`) and cuts it at the first mode
-of the pairwise distances of the background catalog: the center of the
-tallest Freedman-Diaconis bin. The cut labels are written to `cluster`.
-The script saves the pairwise-distance histogram (40 bins in the figure;
-the mode itself uses the Freedman-Diaconis count) and the dendrogram.
-It does not compute convex hulls.
+The final patches are a second centroid-linkage cut
+(`method="centroid"`) of the selected dense events. The cut distance is
+the global mode of the pairwise distances of the background catalog:
+the maximum of the Freedman-Diaconis histogram (the center of its
+tallest bin). The labels are written to `cluster`. The script saves the
+pairwise-distance histogram (40 bins in the figure; the mode itself
+uses the Freedman-Diaconis count) and the dendrogram. It does not
+compute convex hulls.
 
 ## Event trees
 

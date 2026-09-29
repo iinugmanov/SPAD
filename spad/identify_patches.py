@@ -1,10 +1,16 @@
 """SPAD: seismogenic patches from a declustered earthquake catalog.
 
-Background events (rows whose ``Aftershock`` value is not true) are
-grouped with a Discrete Perfect Sets density filter. The search varies
-the localization-radius exponent ``q`` and the density level ``beta``.
-Dense events are then cut into patches by centroid-linkage hierarchical
-clustering at the first mode of the pairwise-distance histogram.
+Background events (rows whose ``Aftershock`` value is not true) form
+the level set ``{P >= alpha}`` of a DPS-style density, with
+``alpha = (1 - beta) * max(P)``. That is the simple choice
+``X^1(alpha)`` of Agayan et al. (2014): the point itself is excluded,
+``P`` is not normalised, and the script does not iterate to the maximal
+alpha-perfect set. The kernel is ``1 - d/r``. The radius ``r`` is the
+power mean of the positive pairwise distances at a negative exponent
+``q``. The search varies ``q`` and ``beta``. Dense events are then cut
+into patches by centroid-linkage hierarchical clustering at the global
+mode (maximum of the Freedman-Diaconis histogram) of the pairwise
+distances.
 
 Expected columns: ``lat``, ``lon``, ``depth``, ``time``, ``magnitude``,
 and ``Aftershock``. ``depth`` is in kilometres. ``time`` is an ISO 8601
@@ -148,7 +154,7 @@ def freedman_diaconis_bins(data):
 
 @jit(nopython=True, parallel=True)
 def compute_density(distance_matrix, radius):
-    """DPS density of each event inside ``radius``.
+    """DPS-style density (point itself excluded, not normalised).
 
     Parameters
     ----------
@@ -263,15 +269,17 @@ def analyze_peak_similarity(all_densities, dense_densities):
 
 
 def search_dense_groups(distance_matrix, all_distances):
-    """Grid search of ``q`` and ``beta`` for the DPS dense subset.
+    """Grid search of ``q`` and ``beta`` for the level set ``{P >= alpha}``.
 
-    ``q`` runs through ``numpy.arange(-2.9, -0.1, 0.1)`` and ``beta``
-    through ``numpy.arange(-1.0, 1.0, 0.1)``. The radius is the
-    generalized mean of order ``q`` of the positive pairwise distances.
-    Configurations with fewer than two dense events are skipped. The
-    kept configuration minimizes the density-histogram peak difference
-    and, on a tie, keeps the larger number of centroid-linkage clusters
-    cut at that radius.
+    ``alpha = (1 - beta) * max(P)`` for a DPS-style density (the point
+    itself is excluded and ``P`` is not normalised). ``q`` runs through
+    ``numpy.arange(-2.9, -0.1, 0.1)`` and ``beta`` through
+    ``numpy.arange(-1.0, 1.0, 0.1)``. The radius is the power mean of
+    order ``q`` of the positive pairwise distances. Configurations with
+    fewer than two dense events are skipped. The kept configuration
+    minimizes the density-histogram peak difference, an empirical SPAD
+    heuristic that is not part of DPS, and on a tie keeps the larger
+    number of centroid-linkage clusters cut at that radius ``r``.
 
     Parameters
     ----------
@@ -418,7 +426,8 @@ def visualize_dendrogram(linkage_matrix, threshold, output_path):
     linkage_matrix : numpy.ndarray
         Linkage matrix of the dense events.
     threshold : float
-        Horizontal line, in kilometres, drawn at the distance mode.
+        Horizontal line, in kilometres, at the global mode (maximum of
+        the Freedman-Diaconis histogram).
     output_path : str
         Figure path. The file is written as PDF.
     """
@@ -472,7 +481,8 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Identify seismogenic patches in a declustered catalog "
-            "(DPS density filter, then centroid-linkage clustering)."
+            "(level set {P >= alpha} of a DPS-style density, "
+            "then centroid linkage at the global mode)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(

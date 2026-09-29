@@ -2,15 +2,15 @@
 
 SPAD (Seismogenic Patches Detection) identifies seismogenic patches from
 an earthquake catalog. The catalog is declustered with a nearest-neighbour
-proximity in time, space and magnitude. Background events are then filtered
-with the Discrete Perfect Sets (DPS) density rule, and the dense events are
-cut into patches by hierarchical clustering. The paper interprets these
-patches as the seismic expression of tectonic asperities. Locations of
-strong earthquakes are not an input.
+proximity in time, space and magnitude. Background events are then reduced
+to a level set of a DPS-style density, and those dense events are cut into
+patches by centroid-linkage clustering. The paper interprets these patches
+as the seismic expression of tectonic asperities. Locations of strong
+earthquakes are not an input.
 
-The three stages below follow Ostapchuk and Nugmanov (2026). Formulas,
-the DPS search as implemented, and the differences from the paper's
-mapping stage are in [`docs/algorithm.md`](docs/algorithm.md).
+The three stages below follow Ostapchuk and Nugmanov (2026). Formulas and
+the dense-event selection as implemented are in
+[`docs/algorithm.md`](docs/algorithm.md).
 
 ## Algorithm
 
@@ -22,22 +22,26 @@ mapping stage are in [`docs/algorithm.md`](docs/algorithm.md).
    A two-component Gaussian mixture of `log10(eta)` sets the threshold
    `eta0`. Events with `eta < eta0` are the clustered mode (`Aftershock`);
    the rest are background.
-2. **DPS fuzzy clustering.** On the background, a radius `r` is the
-   generalized mean of pairwise distances at exponent `q < 0`. The density
-   of an event is the sum of `1 - distance/r` over other events inside
-   `r`. The script scans a grid of `q` and `beta` and keeps events whose
-   density is at least `alpha = max(P) * (1 - beta)`. The selected grid
-   point minimizes a peak-distance between density histograms and, on a
-   tie, maximizes the number of clusters.
-3. **Patches.** Dense events are clustered by centroid linkage. The cut is
-   the first mode of the background pairwise-distance histogram. The paper
-   describes this stage as a minimal spanning tree cut at that mode, with
-   patch contours equal to the convex hull of each cluster. The script
+2. **Dense events.** On the background, the radius `r` is the power mean
+   of the positive pairwise distances at a negative exponent `q`. The
+   density `P` uses the kernel `1 - d/r`. The point itself is excluded,
+   and `P` is not divided by its maximum. Dense events are the level set
+   `{P >= alpha}` with `alpha = (1 - beta) * max(P)`. That is the simple
+   choice `X^1(alpha)` of Agayan et al. (2014). The script does not
+   iterate to the maximal alpha-perfect set. A grid of `q` and `beta` is
+   scored by an empirical SPAD heuristic that is not part of DPS: the mean
+   distance between peaks of the density histogram of all background
+   events and peaks of the histogram of the dense subset. On a tie the
+   larger number of clusters is kept. Inside the search those clusters
+   are a centroid-linkage cut at the radius `r`.
+3. **Patches.** The selected dense events are cut again by centroid
+   linkage, at the global mode of the background pairwise-distance
+   histogram (the maximum of the Freedman-Diaconis histogram). The script
    writes cluster labels, a distance histogram and a dendrogram. It does
    not build convex hulls.
 
-Declustering and the DPS stage use a 3D distance: haversine separation
-plus the depth difference, with Earth radius 6371 km.
+Declustering and the dense-event stage use a 3D distance: haversine
+separation plus the depth difference, with Earth radius 6371 km.
 
 ## Pipeline
 
@@ -217,3 +221,7 @@ Each script also accepts `--help`.
 Ostapchuk, A.; Nugmanov, I. Background Seismicity Highlights Tectonic
 Asperities. *Geosciences* **2026**, *16*, 38.
 <https://doi.org/10.3390/geosciences16010038>
+
+Agayan, S. M.; Bogoutdinov, Sh. R.; Dobrovolsky, M. N. Discrete Perfect
+Sets and Their Application in Cluster Analysis. *Cybernetics and Systems
+Analysis* **2014**, *50*(2), 176–190.
