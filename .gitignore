@@ -19,3 +19,12 @@ htmlcov/
 *.nbc
 *.nbi
 .numba_cache/
+
+# Local outputs. Catalogs, figures and pickles are not part of the package.
+*.pkl
+*.pickle
+*.npz
+*.png
+*.pdf
+*.csv
+runs/

@@ -1,16 +1,20 @@
 # SPAD algorithm
 
-SPAD (Seismogenic Patches Detection) separates background seismicity from
-clustered seismicity and groups the background into dense sets. The paper
-interprets those sets, and the larger patches that contain them, as the
-seismic expression of tectonic asperities. The method does not use the
-locations of strong earthquakes as input.
+SPAD separates background seismicity from clustered seismicity and then
+describes the background with a density filtration. The 2026 paper
+reads dense background events as the seismic expression of tectonic
+asperities. Locations of strong earthquakes are not an input.
 
-The paper organizes the method in three stages. The code in this
-repository implements declustering, a level set of a DPS-style density,
-and a centroid-linkage cut of the dense events. Convex-hull patch
-contours are not computed. Event trees are a separate post-declustering
-tool; they are not one of the three stages.
+Declustering follows Ostapchuk and Nugmanov (2026). The clustering
+stage in this repository is an alpha-filtration of the canonical DPS
+density of Agayan, Bogoutdinov and Dobrovolsky (2014). It builds a
+condensed tree over the density level and reads persistent components
+off that tree. The exponent `q` is an input. The program does not
+claim a best `q`.
+
+The filtration does not cut one level set with centroid linkage, and
+it does not build convex-hull contours. Event trees are a separate
+post-declustering tool. They are not part of the filtration.
 
 ## 1. Background seismicity
 
@@ -42,9 +46,9 @@ kilometres. The horizontal part is a haversine distance with Earth radius
 r = sqrt(horizontal_km ** 2 + depth_difference_km ** 2)
 ```
 
-The depth column is `z_proj`, used as given. The script does not project
-hypocenters onto a slab. In the paper that projection was done before
-declustering, with Slab2.
+The depth column is `z_proj`, used as given. The declustering script
+does not project hypocenters onto a slab. In the paper that projection
+was done before declustering, with Slab2.
 
 A second rule, stated in the paper, drops events inside a space-time
 window of a magnitude `M` event: radius `0.02 * 10 ** (0.5 * M)` km and
@@ -77,75 +81,211 @@ quote a single default for it. The command-line help uses `1` and `1.6`
 only as examples.
 
 The distance routine reads its three columns as latitude, longitude and
-depth. Declustering passes `latitude`, `longitude`, `z_proj` in that order.
+depth. Declustering passes `latitude`, `longitude`, `z_proj` in that
+order.
 
-## 2. Dense events
+Time gaps use `astype("int64") // 10**9`, which is seconds when the
+timestamp is `datetime64[ns]` (pandas 2.x).
 
-Background events are reduced to a level set of a DPS-style density.
-The construction is the simple choice `X^1(alpha)` of Agayan,
-Bogoutdinov and Dobrovolsky (2014). The script does not iterate to the
-maximal alpha-perfect set.
+## 2. Distance in the clustering stage
 
-For a set `W` and a negative exponent `q`, the localization radius is
-the power mean of the positive pairwise distances `D(W)`:
-
-```text
-r_q(W) = (sum(d ** q) / |D(W)|) ** (1 / q)
-```
-
-The density at `w` uses the kernel `1 - d/r`. The point itself is
-excluded, and the sum is not divided by `max(P)`:
+The clustering distance is the same 3D combination, with Earth radius
+6371 km. The haversine argument is clipped to `[0, 1]`:
 
 ```text
-P(w) = sum over other xi with d(w, xi) <= r of (1 - d(w, xi) / r)
+d = sqrt(haversine(lat, lon)^2 + (depth_i - depth_j)^2)
 ```
 
-The level is
+Two depth choices are available.
+
+* Catalog depth: the `depth` column, in kilometres.
+* Slab depth: `depth = -z_proj`. This is the depth on the slab surface
+  for a catalog whose `z_proj` is the signed distance to that surface.
+  Latitude and longitude stay the catalog values. An inverse of
+  EPSG:3395 is provided only as a coordinate check; it is not the
+  distance.
+
+Null epicentres are not on the original slab samples. In slab mode their
+depth is assigned by a `SlabSurface` interpolant: linear interpolation
+of the real events' `-z_proj` in local kilometres (equirectangular about
+the mean latitude), and the nearest real epicentre outside the convex
+hull. Epicentres that coincide after rounding those local coordinates
+to 0.001 km are averaged first.
+
+The radius at a negative exponent `q` is the power mean of the positive
+pairwise distances:
 
 ```text
-alpha = (1 - beta) * max(P)
+r(q) = (mean of d^q) ** (1/q)
 ```
 
-Dense events are `{w : P(w) >= alpha}`. When `max(P)` is 0 the code
-returns `alpha = 0`, which is the same product.
+Zero distances are left out of the mean. `r(q)` is recomputed for every
+catalog, unless a run is explicitly scored at a fixed radius (the
+fixed-`r` null comparison uses the real catalog's `r(q)`).
 
-The script searches
+## 3. DPS density and the alpha-filtration
+
+On a catalog `X` with radius `r`, the kernel weight is `1 - d/r` for
+every pair with `d <= r`, including an event with itself (weight 1).
+`C` is the maximum row sum. The density is that row sum divided by `C`:
 
 ```text
-q    = numpy.arange(-2.9, -0.1, 0.1)
-beta = numpy.arange(-1.0, 1.0, 0.1)
+P(x) = (1/C) * sum_{y: d(x,y) <= r} (1 - d(x,y)/r)
 ```
 
-`arange` does not include the stop value, so `beta` runs from `-1.0`
-through `0.9` and `q` from `-2.9` up to, but not including, `-0.1`.
-A configuration is skipped when fewer than two events pass `alpha`.
-Among the rest, `q` and `beta` are chosen by an empirical SPAD
-heuristic that is not part of DPS. The heuristic minimizes the mean
-bin-distance between peaks of the density histogram of all background
-events and peaks of the histogram of the dense subset. On a tie it
-keeps the larger number of clusters. Those clusters are a
-centroid-linkage cut of the dense subset at the radius `r` of that
-configuration. They are stored as `dense_group_id` (relabeled from 0;
-events outside the subset are `-1`).
+`P` includes the point and is normalised by `C`. An alpha-perfect set
+is the limit of the iteration that starts from `X` (or from a supplied
+subset) and repeatedly keeps points whose density, recomputed on the
+surviving subset and still divided by the original `C`, is at least
+`alpha`. That is the canonical construction in Agayan et al. (2014),
+not a single level set of `P`.
 
-Rows with `Aftershock == True` are removed before this stage. If the
-column is absent, every row is kept. `magnitude` and `time` must be
-present; the distance calculation does not use them.
+The alpha grid has 60 steps. `alpha[0]` is `min P`. `alpha[60]` is the
+largest alpha with a non-empty perfect set, found by 40 bisection steps
+starting from the set at `min P`. The sets that enter the tree are the
+perfect sets at `alpha[0]` through `alpha[59]`. `alpha[60]` is only the
+terminal value of a component that never dies inside the grid.
 
-Agayan, S. M.; Bogoutdinov, Sh. R.; Dobrovolsky, M. N. Discrete Perfect
-Sets and Their Application in Cluster Analysis. *Cybernetics and Systems
-Analysis* 2014, 50(2), 176–190.
+If a perfect set is not nested in the previous one, the level is still
+used. The solution records `nested_ok = false` and does not repair the
+level.
 
-## 3. Seismogenic patches
+Components at a level are the connected components of the radius graph
+(a single-linkage cut at `r`) inside the perfect set. Components smaller
+than `m_min = 5` are dropped. The condensed tree keeps a component while
+its points carry exactly one surviving child label. The component dies
+when it splits into two or more such children, which are born at that
+level, or when no child remains. A component still alive at the last
+level dies at `alpha[60]`. Persistence is
 
-The final patches are a second centroid-linkage cut
-(`method="centroid"`) of the selected dense events. The cut distance is
-the global mode of the pairwise distances of the background catalog:
-the maximum of the Freedman-Diaconis histogram (the center of its
-tallest bin). The labels are written to `cluster`. The script saves the
-pairwise-distance histogram (40 bins in the figure; the mode itself
-uses the Freedman-Diaconis count) and the dendrogram. It does not
-compute convex hulls.
+```text
+pi = alpha[death] - alpha[birth]
+```
+
+The node is alive on levels `birth, ..., death-1`.
+
+### Birth-set reading (max-patches score)
+
+Excess of mass on persistence selects a non-overlapping set of nodes.
+Children replace a parent only when their total persistence is strictly
+greater; a tie keeps the parent. Nodes born at the first level compete.
+The patch is the component at birth. The score at that `q` is the number
+of patches, then the number of events in those patches. The remaining
+tie-break is the mean bin-distance between peaks of the density
+histogram of all events and peaks of the histogram of the birth-set
+events (shared Freedman-Diaconis bins). That peak comparison is an
+empirical tie-break. It is not part of DPS. It is `+inf` when either
+histogram has no peak.
+
+The max-patches helper evaluates this score on
+
+```text
+q = -4.0, -3.8, ..., -1.0
+```
+
+and reports the maximiser. It is a summary of that grid, not a best `q`.
+
+### Core reading (plateau helper)
+
+A node is eligible when it lives at least 3 levels (`death - birth >= 3`;
+on a 120-level grid the same fraction is 6) and it was not born at level
+0. A node born at `alpha[0] = min P` is a component of the whole
+catalog. Its birth is cut off by the start of the grid, so its
+persistence is not used. Eligible nodes compete by persistence. A tie
+keeps the parent. A node that is not eligible does not compete; an
+eligible descendant of it still can.
+
+The core of a selected node is the component at the median level of its
+life,
+
+```text
+k_med = birth + floor((death - 1 - birth) / 2)
+```
+
+not the level just before death. Core size is at least `m_min`.
+
+On the grid `q = -4.0, -3.9, ..., -1.0` (31 values), neighbouring
+solutions match when they have the same number of cores and every core
+has a best Jaccard match of at least 0.8 against the cores at the next
+`q`. Jaccard is `|A ∩ B| / |A ∪ B|` on event indices. The match is
+per patch. An event-weighted mean is not used. Cores inside one solution
+are disjoint, so with equal counts a threshold above 0.5 is a one-to-one
+match. Two empty solutions count as the same, and they still cannot form
+a valid plateau.
+
+A plateau is a maximal run of matching neighbours. It is valid when it
+covers at least two grid points and the common patch count is at least
+2. The helper reports the longest valid plateau. A tie goes to the
+plateau whose first `q` is larger. The reported `q` is the middle grid
+point; for an even length it is the upper of the two middle points.
+The patches at that `q` are the cores. If the plateau touches `q = -4`
+or `q = -1`, it is flagged as edge-censored. The flag does not move the
+reported `q`. If no valid plateau exists, the helper reports none.
+
+This helper is defined on that grid and those thresholds. It is not a
+claim that the reported `q` is optimal. On any other grid the same
+comparison only describes that scan.
+
+## 4. Null catalogs, bootstrap, exceedance
+
+Null catalogs keep the event count of the real catalog.
+
+* Epicentre shift, `sigma = 50` km, seeds `1000 + i`. Each event moves
+  by an isotropic Gaussian horizontal vector (`sigma` per component).
+  The generator also draws `U(-10, 10)` km of depth and clips at 0.
+* Epicentre shift, `sigma = 100` km, seeds `2000 + i`, same construction.
+* Uniform in the union of 75 km horizontal discs about the real
+  epicentres, seeds `3000 + i`. Draws are uniform in longitude and in
+  `sin(latitude)` inside a bounding box, then rejected outside the
+  discs. The generator assigns a permutation of the input depths.
+* Bootstrap: 80% of the events without replacement, seeds `4000 + i`,
+  indices returned in increasing order. Depth is the depth already
+  chosen for those real events. Bootstrap replicas are not nulls.
+
+In slab mode the shift and uniform depths drawn by the generator are
+discarded and replaced by the slab-surface interpolant. The generator
+is still called in full, so the seed stream matches a run that keeps
+the drawn depths. A destination longitude is folded into `(-180, 180]`.
+When every input longitude is positive, a negative destination
+longitude is then increased by 360.
+
+Each null catalog is solved twice on the same `q` grid: at its own
+`r(q)`, and at the real catalog's `r` (fixed-radius comparison).
+Bootstrap replicas are solved only at their own `r(q)`.
+
+At each `q` the exceedance of a real score over one null model is
+
+```text
+z = (real - mean(null)) / sd(null)
+```
+
+with the sample standard deviation (`ddof=1`). If that deviation is
+zero, `z` is 0 when the real value equals the null mean and signed
+infinity otherwise. The empirical tail probabilities are
+
+```text
+p_upper = (1 + #{null >= real}) / (n_null + 1)
+p_lower = (1 + #{null <= real}) / (n_null + 1)
+```
+
+The scores are the plateau-rule patch count, the core fraction, the
+birth-set patch count, and the birth-set event fraction.
+
+Bootstrap reproducibility, at each `q`, restricts every real core to
+the replica's events and takes its best Jaccard match against the
+replica's cores. The reported weight is the core size on the full real
+catalog. `wmean_freq05` is the size-weighted mean of the fraction of
+replicas with Jaccard at least 0.5. `frac_ge08` is the fraction of real
+cores whose Jaccard-at-least-0.5 frequency is itself at least 0.8.
+A replica with no core scores 0 against every real core. These
+frequencies describe stability. They do not choose `q`.
+
+## 5. Choosing q
+
+Choose `q` from the scan, from the exceedance table (same `q` and fixed
+real radius) and from the bootstrap frequencies. The max-patches helper
+and the plateau helper are optional summaries with the definitions
+above. Neither one is an automatic best `q`.
 
 ## Event trees
 
@@ -166,3 +306,46 @@ the module docstring.
 
 `plot_event_trees.py` draws one figure per `group_id`. Arrows follow
 `nearest_neighbor` when the neighbour is inside the group.
+
+## Behaviour left as implemented
+
+These are properties of the numerics. They are not corrected in this
+package.
+
+* Shift longitudes are folded into `(-180, 180]`, and then increased by
+  360 when they are negative and every input longitude is positive. A
+  shift across the antimeridian is stored near 360 rather than as a
+  small negative longitude.
+* Slab nulls draw the shift's depth jitter, or the uniform catalog's
+  depth permutation, and then replace that depth with the interpolant.
+  The draw still consumes the random stream.
+* The alpha supremum is a 40-step bisection with a warm start at
+  `min P`. A level that is not nested in the previous perfect set is
+  kept; only `nested_ok` changes.
+* Component labels are the order returned by SciPy
+  `connected_components`. Patch numbers follow sorted node ids of the
+  condensed tree, which follow that order.
+* Excess of mass keeps the parent when the children's total persistence
+  equals the parent's (`>` for the birth-set reading, `>=` for the
+  plateau reading).
+* Two neighbouring empty solutions count as the same in the plateau
+  comparison. They cannot form a valid plateau, because a valid plateau
+  needs at least two patches.
+* Bootstrap Jaccard divides by patch size in the restricted labeling.
+  A real core that is absent from an 80% subsample has size 0 there,
+  and the ratio is undefined.
+* The slab surface averages duplicated epicentres after rounding local
+  east/north coordinates to 0.001 km, and uses the nearest epicentre
+  outside the convex hull.
+* The peak-similarity tie-break uses 10 bins when the Freedman-Diaconis
+  width is 0, and returns `+inf` when either histogram has no peak.
+
+## References
+
+Ostapchuk, A.; Nugmanov, I. Background Seismicity Highlights Tectonic
+Asperities. *Geosciences* 2026, *16*, 38.
+<https://doi.org/10.3390/geosciences16010038>
+
+Agayan, S. M.; Bogoutdinov, Sh. R.; Dobrovolsky, M. N. Discrete Perfect
+Sets and Their Application in Cluster Analysis. *Cybernetics and Systems
+Analysis* 2014, *50*(2), 176–190.

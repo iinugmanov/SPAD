@@ -2,15 +2,19 @@
 
 SPAD (Seismogenic Patches Detection) identifies seismogenic patches from
 an earthquake catalog. The catalog is declustered with a nearest-neighbour
-proximity in time, space and magnitude. Background events are then reduced
-to a level set of a DPS-style density, and those dense events are cut into
-patches by centroid-linkage clustering. The paper interprets these patches
-as the seismic expression of tectonic asperities. Locations of strong
-earthquakes are not an input.
+proximity in time, space and magnitude. Background events are then
+described by an alpha-filtration of a DPS density. The exponent `q` sets
+the radius. Persistent components of that filtration are the patches.
+The paper interprets dense background events as the seismic expression
+of tectonic asperities. Locations of strong earthquakes are not an input.
 
-The three stages below follow Ostapchuk and Nugmanov (2026). Formulas and
-the dense-event selection as implemented are in
-[`docs/algorithm.md`](docs/algorithm.md).
+Declustering follows Ostapchuk and Nugmanov (2026). The clustering stage
+is the filtration below, not a single density level set and not a
+centroid-linkage cut. Formulas are in [`docs/algorithm.md`](docs/algorithm.md).
+
+`q` is chosen by the user. The scan, the null exceedance and the
+bootstrap frequencies are the diagnostics. A max-patches summary and a
+plateau summary are optional helpers. Neither helper is a best `q`.
 
 ## Algorithm
 
@@ -22,30 +26,29 @@ the dense-event selection as implemented are in
    A two-component Gaussian mixture of `log10(eta)` sets the threshold
    `eta0`. Events with `eta < eta0` are the clustered mode (`Aftershock`);
    the rest are background.
-2. **Dense events.** On the background, the radius `r` is the power mean
+2. **Radius and density.** On the background, `r(q)` is the power mean
    of the positive pairwise distances at a negative exponent `q`. The
-   density `P` uses the kernel `1 - d/r`. The point itself is excluded,
-   and `P` is not divided by its maximum. Dense events are the level set
-   `{P >= alpha}` with `alpha = (1 - beta) * max(P)`. That is the simple
-   choice `X^1(alpha)` of Agayan et al. (2014). The script does not
-   iterate to the maximal alpha-perfect set. A grid of `q` and `beta` is
-   scored by an empirical SPAD heuristic that is not part of DPS: the mean
-   distance between peaks of the density histogram of all background
-   events and peaks of the histogram of the dense subset. On a tie the
-   larger number of clusters is kept. Inside the search those clusters
-   are a centroid-linkage cut at the radius `r`.
-3. **Patches.** The selected dense events are cut again by centroid
-   linkage, at the global mode of the background pairwise-distance
-   histogram (the maximum of the Freedman-Diaconis histogram). The script
-   writes cluster labels, a distance histogram and a dendrogram. It does
-   not build convex hulls.
-
-Declustering and the dense-event stage use a 3D distance: haversine
-separation plus the depth difference, with Earth radius 6371 km.
+   distance is a haversine separation of latitude and longitude (Earth
+   radius 6371 km) combined with the depth difference. Depth is either
+   the catalog `depth` or the slab depth `-z_proj`. The DPS density uses
+   the kernel `1 - d/r`, includes the event itself, and divides by the
+   maximum row sum. An alpha-perfect set is the iterated trim of Agayan
+   et al. (2014): a point stays only while its density on the surviving
+   set is at least alpha. Sixty alpha levels run from the minimum density
+   to the largest alpha with a non-empty perfect set.
+3. **Tree and patches.** Components are the connected components of the
+   radius graph, of size at least 5. The condensed tree follows a
+   component until it splits or disappears. Persistence is the length of
+   its alpha interval. One reading (the max-patches score) is excess of
+   mass on that persistence, with each patch equal to the component at
+   birth. The other reading (the plateau helper) keeps nodes that live
+   at least three levels and were not born at the first level, and takes
+   the component at the median level of its life as the core. The user
+   decides which `q` to keep.
 
 ## Pipeline
 
-Declustering is shared. Patch identification and event trees are separate
+Declustering is shared. The filtration and the event trees are separate
 branches. They do not read each other's outputs.
 
 ```text
@@ -58,18 +61,17 @@ spad/declustering.py
     |
     +-------------------------------+
     |                               |
-    | rename columns                |
     v                               v
-spad/identify_patches.py     spad/form_event_trees.py
-    dense events, clusters        catalog_with_tree.csv
-    histogram, dendrogram             |
-                                      v
-                              spad/classify_event_types.py
-                                  catalog_with_types.csv
-                                      |
-                                      v
-                              spad/plot_event_trees.py
-                                  group_<id>_tree.png
+spad.cli qscan / patches /     spad/form_event_trees.py
+ensemble / exceedance              catalog_with_tree.csv
+    per-q table, patches               |
+    null and bootstrap pickles         v
+                                   spad/classify_event_types.py
+                                       catalog_with_types.csv
+                                           |
+                                           v
+                                   spad/plot_event_trees.py
+                                       group_<id>_tree.png
 ```
 
 `form_event_trees.py` chains rows with `passed_filter`, not rows with
@@ -94,41 +96,29 @@ longitude,latitude,z_proj,time,mag
 160.25,52.10,30.0,2020-03-01 04:12:00+00:00,4.6
 ```
 
-The script does not project hypocenters. In the paper, events were
-projected onto the slab with Slab2 before this step; `z_proj` is whatever
-depth the file already contains.
+The declustering script does not project hypocenters. In the paper,
+events were projected onto the slab with Slab2 before this step;
+`z_proj` is whatever depth the file already contains.
 
 After declustering, `event_id` is the row index of the catalog sorted by
 time, and `nearest_neighbor` is an `event_id`.
 
-### SPAD
+### Filtration
 
-| Column | Type | Example |
+| Column | Type | Role |
 | --- | --- | --- |
-| `lat` | float, degrees | 37.7749 |
-| `lon` | float, degrees | -122.4194 |
-| `depth` | float, km | 10.0 |
-| `time` | datetime, ISO 8601 | 2023-01-01 12:30:45.123456+00:00 |
-| `magnitude` | float | 4.5 |
-| `Aftershock` | boolean | False |
+| `lat` or `latitude` | float, degrees | Epicentre |
+| `lon` or `longitude` | float, degrees | Epicentre |
+| `depth` | float, km | Used when `--depth catalog` |
+| `z_proj` | float, km | Slab depth is `-z_proj` when `--depth slab` |
+| `Aftershock` | boolean | Rows equal to true are removed. Optional. |
 
-Rows with `Aftershock == True` are removed. If the column is missing,
-every row is kept. `magnitude` and `time` are required and are not used
-in the distance or the clustering.
+`--depth catalog` (the default) uses `depth`. `--depth slab` uses
+`-z_proj` and, for shift and uniform nulls, replaces depth with the
+slab-surface interpolant of the real `-z_proj` values. Bootstrap
+replicas keep the depth of the events they retain.
 
-A declustered file can be renamed into this schema. `z_proj` is copied
-into `depth` with no further calculation:
-
-```python
-df = pd.read_csv("catalog_with_aftershock.csv")
-df = df.rename(columns={
-    "latitude": "lat",
-    "longitude": "lon",
-    "z_proj": "depth",
-    "mag": "magnitude",
-})
-df.to_csv("spad_input.csv", index=False)
-```
+`magnitude` and `time` are not used by the filtration.
 
 ## Outputs
 
@@ -138,10 +128,18 @@ df.to_csv("spad_input.csv", index=False)
 of `log10(eta)`), `GMM.pdf` (mixture and threshold), `Declustered_T_R.pdf`
 (joint distribution of `log10(T)` and `log10(R)`).
 
-**SPAD:** background events with `dense_group_id` (`-1` outside the dense
-subset); dense events with `cluster`; a histogram table
-(`Distance_all_km`, `Frequency_all`, `Distance_dense_km`,
-`Frequency_dense`); the histogram and dendrogram as PDF.
+**Filtration.** `qscan` writes a table with, at each `q`, the radius,
+the birth-set patch count and event count, the peak-similarity
+tie-break, the plateau-rule patch count, the core event count and the
+core fraction. `patches` writes event labels and a patch summary at one
+user-given `q`. Labels in the event file are 1-based; 0 means the event
+is outside that reading. `eom_patch` is the birth-set excess-of-mass
+label. `core_patch` is the plateau-rule core at that same `q` (it is not
+the result of searching the plateau). `ensemble` writes one pickle per
+replica under `--out-dir`. `exceedance` writes `z`, empirical tail
+probabilities and, when bootstrap replicas are present, the
+reproducibility table. Figures are written only to paths passed on the
+command line.
 
 **Trees:** `tree_id`, `parent` (`0` at the root, `nearest_neighbor` inside
 a tree, `-1` otherwise), `group_id` (0 if the event is not in a kept
@@ -162,11 +160,20 @@ arrows along `nearest_neighbor`.
 | `--d-value` | declustering | Fractal dimension `d` (`d_f` in the paper). Example: `1.6`. |
 | `--n-trials`, `--random-seed` | declustering | Mixture refits. Defaults `30` and `2`, which are the original script values. |
 | `--interpolation` | declustering | Heatmap interpolation. Default `bicubic`. |
-| `q`, `beta` | SPAD, fixed grid | `q` in `numpy.arange(-2.9, -0.1, 0.1)`, `beta` in `numpy.arange(-1.0, 1.0, 0.1)`. Not command-line arguments. |
+| `--depth` | filtration | `catalog` or `slab`. |
+| `--q-min`, `--q-max`, `--q-step` | filtration | Default grid `-4` to `-1` in steps of `0.1` (31 values). Step `0.2` is the max-patches grid. |
+| `--q` | `patches` | One exponent. Required. Not chosen by the program. |
+| `--n-shift50`, `--n-shift100`, `--n-unif`, `--n-boot` | ensemble | Replica counts. Seeds are `1000+i`, `2000+i`, `3000+i`, `4000+i`. |
+| `--workers` | ensemble | Spawned processes. `1` runs in the current process. |
 
 The mixture threshold is estimated from the catalog. The paper's
 `lg eta0 = -1.72` is the value obtained for the Kamchatka catalog, not a
 constant in the script.
+
+The filtration defaults are 60 alpha levels and a minimum component size
+of 5. Null shift uses `sigma` of 50 or 100 km. The uniform null uses a
+75 km buffer. Bootstrap replicas keep 80% of the events without
+replacement.
 
 Time gaps in declustering and in `time_diff_seq` are
 `astype("int64") // 10**9 / 86400`, which is days when the timestamp is
@@ -193,13 +200,30 @@ python -m spad.declustering \
     --d-value 1.6 \
     --output-dir results/decluster
 
-python -m spad.identify_patches \
-    --input spad_input.csv \
-    --dense-events results/dense_events.csv \
-    --clustered-results results/patches.csv \
-    --histogram-csv results/histogram.csv \
-    --histogram-plot results/histogram.pdf \
-    --dendrogram-plot results/dendrogram.pdf
+python -m spad.cli qscan \
+    --catalog background.csv \
+    --depth slab \
+    --output results/qscan.csv
+
+python -m spad.cli patches \
+    --catalog background.csv \
+    --depth slab \
+    --q -2.5 \
+    --events results/events.csv \
+    --patches results/cores.csv
+
+python -m spad.cli ensemble \
+    --catalog background.csv \
+    --depth slab \
+    --out-dir results/ensemble \
+    --n-shift50 2 \
+    --n-boot 2 \
+    --workers 2
+
+python -m spad.cli exceedance \
+    --runs results/ensemble \
+    --output results/exceedance.csv \
+    --bootstrap-output results/bootstrap.csv
 
 python -m spad.form_event_trees \
     --input results/decluster/catalog_with_aftershock.csv \
@@ -214,7 +238,21 @@ python -m spad.plot_event_trees \
     --output-dir results/event_trees
 ```
 
+`qscan` prints the max-patches helper and the plateau helper after the
+table. Those lines restate the definitions in `docs/algorithm.md`. They
+are not a selected `q`. Pick `q`, then use `patches` at that value.
+
 Each script also accepts `--help`.
+
+## Tests
+
+```bash
+python -m pytest
+```
+
+The tests use small synthetic catalogs. They check the distance, tree
+invariants, seed stability of the null and bootstrap generators, and a
+frozen `q` scan.
 
 ## Citation
 

@@ -7,3 +7,4 @@ matplotlib
 numba
 scikit-learn
 scipy
+pytest
