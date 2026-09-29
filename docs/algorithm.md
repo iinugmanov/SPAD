@@ -77,7 +77,7 @@ quote a single default for it. The command-line help uses `1` and `1.6`
 only as examples.
 
 The distance routine reads its three columns as latitude, longitude and
-depth. The caller passes `longitude`, `latitude`, `z_proj` in that order.
+depth. Declustering passes `latitude`, `longitude`, `z_proj` in that order.
 
 ## 2. Fuzzy clustering of the background
 

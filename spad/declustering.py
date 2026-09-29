@@ -265,7 +265,9 @@ def process_catalog_with_progress(df, b_value, d_value, apply_filter):
     ----------
     df : pandas.DataFrame
         Catalog with ``longitude``, ``latitude``, ``z_proj``, ``time``
-        and ``mag``. ``time`` must already be datetime-like.
+        and ``mag``. ``time`` must already be datetime-like. The array
+        passed to :func:`compute_space_diff` is latitude, longitude,
+        ``z_proj``, which is the order that routine reads.
     b_value, d_value : float
         Gutenberg-Richter ``b`` and fractal dimension ``d``.
     apply_filter : bool
@@ -278,7 +280,7 @@ def process_catalog_with_progress(df, b_value, d_value, apply_filter):
         and ``passed_filter``.
     """
     del apply_filter  # both neighbours are always computed; see docstring
-    coords = df[["longitude", "latitude", "z_proj"]].values
+    coords = df[["latitude", "longitude", "z_proj"]].values
     time_values = df["time"].astype(np.int64).values
     magnitudes = df["mag"].values
 
